@@ -27,7 +27,7 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
 # 4. --- Core Logic with Memory ---
 
 memory_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful, witty assistant. Keep your response short."),
+    ("system", "{system_message}"), # use dynamic variable instead of hardcoded string 
     MessagesPlaceholder(variable_name="history"),
     ("user", "{input}")
 ])
@@ -49,15 +49,19 @@ with_message_history = RunnableWithMessageHistory(
 # simplicity in this single user chat.
 CONFIG = {"configurable":{"session_id":"chat1"}}
 
-def chat_function(message, history):
+def chat_function(message, history, system_instruction):
     """
     Wrapper function for Gradio.
     
     "message" is current user input.
     "history" is passed by Gradio because LangChain handles it.
+    "system_instruction" comes from the additional_inputs.
     """
     response = with_message_history.invoke(
-        {"input": message}, 
+        {
+            "input": message,
+            "system_message": system_instruction
+        }, 
         config=CONFIG,
     )
     return response
@@ -65,9 +69,24 @@ def chat_function(message, history):
 # 8. Launch the Gradio Chat Interface
 if __name__ == "__main__":
     print("--- Launching Gradio UI ---")
-    demo = gr.ChatInterface(fn=chat_function, title="LangChain Bot")
+    demo = gr.ChatInterface(
+        fn=chat_function, 
+        title="LangChain Bot",
+        additional_inputs=[
+            gr.Dropdown(
+                choices=[
+                    "You are a helpful assistant.",
+                    "You are a grumpy pirate who loves rum.",
+                    "You are a concise software engineer.",
+                    "You are a poetic storyteller." 
+                ],
+                value="You are a helpful assistant",
+                label="Select Persona"
+            )
+        ]
+    )
     demo.launch()
 
 # Run the app in background
 # nohup python main.py > gradio_output.log 2>&1 &
-# or just 'uv run main.py'
+# or just 'uv run main.py'     
