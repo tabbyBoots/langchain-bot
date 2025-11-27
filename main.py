@@ -1,15 +1,16 @@
 import os
+import gradio as gr
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 
-# add memory to ChatBot
+# add Memory to ChatBot
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
-# 1. Load env variables (acquire API key in .env file)
+# 1. Load env variables (acquire API key from .env file at root folder)
 load_dotenv()
 
 # 2. Initialize the Model
@@ -23,7 +24,7 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
         store[session_id] = ChatMessageHistory()
     return store[session_id]
 
-# --- Core Logic with Memory ---
+# 4. --- Core Logic with Memory ---
 
 memory_prompt = ChatPromptTemplate.from_messages([
     ("system", "You are a helpful, witty assistant. Keep your response short."),
@@ -31,10 +32,10 @@ memory_prompt = ChatPromptTemplate.from_messages([
     ("user", "{input}")
 ])
 
-# 4. Create the Base Chain
+# 5. Create the Base Chain
 chain = memory_prompt | llm | StrOutputParser()
 
-# 5. Add Memory Wrapper
+# 6. Add Memory Wrapper
 with_message_history = RunnableWithMessageHistory(
     chain,
     get_session_history,
@@ -42,20 +43,31 @@ with_message_history = RunnableWithMessageHistory(
     history_messages_key="history",
 )
 
-# 6. Run the Chain Loop
-print("--- AI Chatbot Initialized (Type 'quit' or 'exit' to end) ---")
+# 7. --- For Gradio Integration ---
 
-# use a constant 'session_id' for simplicity in this single user chat.
+# constant session_id for DEMO only
+# simplicity in this single user chat.
 CONFIG = {"configurable":{"session_id":"chat1"}}
 
-while True:
-    user_input = input("You: ")
-    if user_input.lower() in ["quit", "exit"]:
-        break
-
+def chat_function(message, history):
+    """
+    Wrapper function for Gradio.
+    
+    "message" is current user input.
+    "history" is passed by Gradio because LangChain handles it.
+    """
     response = with_message_history.invoke(
-        {"input": user_input},
+        {"input": message}, 
         config=CONFIG,
     )
+    return response
 
-    print(f"AI: {response}")
+# 8. Launch the Gradio Chat Interface
+if __name__ == "__main__":
+    print("--- Launching Gradio UI ---")
+    demo = gr.ChatInterface(fn=chat_function, title="LangChain Bot")
+    demo.launch()
+
+# Run the app in background
+# nohup python main.py > gradio_output.log 2>&1 &
+# or just 'uv run main.py'
