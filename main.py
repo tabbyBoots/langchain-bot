@@ -1,6 +1,7 @@
 import os
 import gradio as gr
 import psycopg
+import uuid
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -41,11 +42,19 @@ try:
     # autocommit=True is recommended so messages are saved immediately
     db_conn = psycopg.connect(DB_CONNECTION, autocommit=True)
 
-    # Initialize the table if it doesn't exist
-    PostgresChatMessageHistory("chat_history", "init", 
-        sync_connection=db_conn).create_tables()
+    # Manually create the table if it doesn't exist
+    with db_conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                    id SERIAL PRIMARY KEY,
+                    session_id UUID NOT NULL,
+                    message JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);
+        """)
     print("✅ Chat history table verified/created.")
-except Exception as e:
+except psycopg.OperationalError as e:
     print(f"⚠️ DB Connection Error: {e}")
     db_conn = None
 
@@ -86,7 +95,7 @@ with_message_history = RunnableWithMessageHistory(
 
 # constant session_id for DEMO only
 # simplicity in this single user chat.
-CONFIG = {"configurable":{"session_id":"chat1"}}
+# CONFIG = {"configurable":{"session_id":"chat1"}}
 
 # function for RAG - process_file
 def process_file(file_obj):
@@ -108,12 +117,13 @@ def process_file(file_obj):
     except Exception as e:
         return f"Error processing file: {str(e)}"
 
-def chat_function(message, history, system_instruction, strict_mode):
+def chat_function(message, history, session_id, system_instruction, strict_mode):
     """
     Wrapper function for Gradio.
     
     "message" is current user input.
     "history" is passed by Gradio because LangChain handles it.
+    "session_id" is the unique ID from gr.State.
     "system_instruction" comes from the additional_inputs.
     "strict_mode" use uploaded files only."
     """
@@ -165,7 +175,8 @@ def chat_function(message, history, system_instruction, strict_mode):
             "input": message,
             "system_message": full_system_message
         }, 
-        config=CONFIG,
+        # config=CONFIG,
+        config={"configurable": {"session_id": session_id}}
     )
 
     # Append Sources
@@ -184,12 +195,19 @@ if __name__ == "__main__":
 
     with gr.Blocks() as demo:
         gr.Markdown("### 🦜🔗 LangChain Bot with RAG")
+        # Add a hidden Textbox to store the session ID
+        session_id_state = gr.State(lambda: str(uuid.uuid4()))
+                                    
+
 
         # Chat Interface
         gr.ChatInterface(
             fn=chat_function, 
             title="LangChain Bot",
             additional_inputs=[
+                # Pass the session_id_state to the chat function
+                session_id_state,
+                
                 gr.Dropdown(
                     choices=[
                         "You are a helpful assistant.",
