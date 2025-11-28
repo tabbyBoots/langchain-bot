@@ -1,5 +1,6 @@
 import os
 import gradio as gr
+import psycopg
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -7,7 +8,8 @@ from langchain_core.output_parsers import StrOutputParser
 
 # add Memory to ChatBot
 from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_community.chat_message_histories import ChatMessageHistory
+#from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_postgres import PostgresChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 # add RAG support
@@ -23,12 +25,43 @@ load_dotenv()
 llm = ChatOpenAI(model="gpt-4o-mini")
 
 # 3. Define the store for Conversation History
-store = {}
+#store = {}
+#def get_session_history(session_id: str) -> BaseChatMessageHistory:
+#    """Helper function to retrieve history for a given seession ID."""
+#    if session_id not in store:
+#        store[session_id] = ChatMessageHistory()
+#    return store[session_id]
+
+# 3. Define the store for Conversation History (using Postgres)
+# Connection string: postgresql://user:password@host:port/dbname
+DB_CONNECTION = "postgresql://langchain:langchain@localhost:5432/langchain_chat"
+
+# Create a global connection to reuse
+try:
+    # autocommit=True is recommended so messages are saved immediately
+    db_conn = psycopg.connect(DB_CONNECTION, autocommit=True)
+
+    # Initialize the table if it doesn't exist
+    PostgresChatMessageHistory("chat_history", "init", 
+        sync_connection=db_conn).create_tables()
+    print("✅ Chat history table verified/created.")
+except Exception as e:
+    print(f"⚠️ DB Connection Error: {e}")
+    db_conn = None
+
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    """Helper function to retrieve history for a given seession ID."""
-    if session_id not in store:
-        store[session_id] = ChatMessageHistory()
-    return store[session_id]
+    """
+    Helper function to retrieve history from Postgres for a given session ID.
+    """
+    if db_conn is None:
+        raise ConnectionError("Database connection is not active.")
+    
+    # Arguments must be positional: table_name, session_id
+    return PostgresChatMessageHistory(
+        "chat_history",
+        session_id,
+        sync_connection=db_conn
+    )
 
 # 4. --- Core Logic with Memory ---
 
@@ -89,7 +122,6 @@ def chat_function(message, history, system_instruction, strict_mode):
     # RAG Logic: If we have a file loaded, find relevant info
     context_text = ""
     sources_list = []
-    #sources_text = ""
 
     if vector_store is not None:
         # Search for the 3 most relevant chunks
@@ -101,7 +133,6 @@ def chat_function(message, history, system_instruction, strict_mode):
 
         # Create a visible "Sources" block for the User
         # Take the first 50 chars of each source to keep it readable
-        # sources_text = "\n\n--- Sources Used ---\n"
         
         for i, doc in enumerate(results):
             # Extract metadata
@@ -128,9 +159,6 @@ def chat_function(message, history, system_instruction, strict_mode):
         full_system_message = system_instruction + context_text
     # --- New Logic END ---
 
-    # Combine original system instruction with the new context
-    # full_system_message = system_instruction + context_text
-
     # Get the response from the LLM
     response_text = with_message_history.invoke(
         {
@@ -146,9 +174,6 @@ def chat_function(message, history, system_instruction, strict_mode):
     else:
         # if no docs were used/founc
         final_response = response_text + "\n\n--- Source Used ---\nSource: LLM"
-
-    # combine the final answer with source text.
-    #return response_text + sources_text
     
     return final_response
 

@@ -12,13 +12,14 @@
 ## Roadmap (Suggested)
 
 ### Phase 1: Fundamentals & Persistence
-- [ ] **Persist Chat History:** Save chat logs to a local database (SQLite or JSON) so conversations aren't lost on restart.
+- [ ] **Persist Chat History:** Save chat logs to a local PostgreSQL database so conversations aren't lost on restart. (Next Step)
 - [ ] **Environment Safety:** Ensure `.env` is properly handled and keys are secure.
 
 ### Phase 2: Retrieval Augmented Generation (RAG)
 - [x] **Document Loading:** functionality to upload text/PDF files.
-- [ ] **Vector Store:** Set up a local vector store (e.g., ChromaDB or FAISS). (In Progress)
-- [ ] **Q&A Chain:** Upgrade the bot to answer questions based on uploaded documents. (In Progress)
+- [x] **Vector Store:** Set up a local vector store (ChromaDB).
+- [x] **Q&A Chain:** Bot answers questions based on uploaded documents with source citations.
+- [x] **Strict Mode:** Checkbox to force answers only from documents.
 
 ### Phase 3: Agents & Tools
 - [ ] **Web Search:** Add a tool (like Tavily or DuckDuckGo) for real-time info.
