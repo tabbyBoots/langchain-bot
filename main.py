@@ -72,6 +72,23 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
         sync_connection=db_conn
     )
 
+def get_all_session_ids() -> list[str]:
+    """
+    Fetch all unique session IDs from the database.
+    """
+    if db_conn is None:
+        print("⚠️ No database connection, cannot fetch session IDs.")
+        return []
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT session_id FROM chat_history ORDER BY session_id;")
+            sessions = [row[0] for row in cur.fetchall()]
+            print(f"✅ Found sessions: {sessions}")
+            return sessions
+    except Exception as e:
+        print(f"⚠️ Error fetching session IDs: {e}")
+        return []
+
 # 4. --- Core Logic with Memory ---
 
 memory_prompt = ChatPromptTemplate.from_messages([
@@ -92,10 +109,6 @@ with_message_history = RunnableWithMessageHistory(
 )
 
 # 7. --- For Gradio Integration ---
-
-# constant session_id for DEMO only
-# simplicity in this single user chat.
-# CONFIG = {"configurable":{"session_id":"chat1"}}
 
 # function for RAG - process_file
 def process_file(file_obj):
@@ -188,55 +201,125 @@ def chat_function(message, history, session_id, system_instruction, strict_mode)
     
     return final_response
 
+def respond(message, chat_history, sesion_id, persona, strict_mode):
+    """
+    Call chat_function to get the LLM response.
+    """
+    bot_message = chat_function(message, chat_history, session_id, persona, strict_mode)
+    chat_history.append((message, bot_message))
+    return "", chat_history
+
 
 # 8. Launch the Gradio Chat Interface
 if __name__ == "__main__":
     print("--- Launching Gradio UI ---")
 
-    with gr.Blocks() as demo:
-        gr.Markdown("### 🦜🔗 LangChain Bot with RAG")
-        # Add a hidden Textbox to store the session ID
-        session_id_state = gr.State(lambda: str(uuid.uuid4()))
-                                    
+    with gr.Blocks(title="LangChain Bot with RAG") as demo:
+        gr.Markdown("### 🦜🔗 LangChain Bot with RAG & Memory")
 
-
-        # Chat Interface
-        gr.ChatInterface(
-            fn=chat_function, 
-            title="LangChain Bot",
-            additional_inputs=[
-                # Pass the session_id_state to the chat function
-                session_id_state,
-                
-                gr.Dropdown(
-                    choices=[
-                        "You are a helpful assistant.",
-                        "You are an export of UAS drone.",
-                        "You are an export of Counter-Rocket, Artillery, Mortar(C-RAM)",
-                        "You are an export of anti-UAS drone. system",
-                        "You are a poetic storyteller." 
-                        ],
-                    value="You are a helpful assistant.",
-                    label="Persona"
-                ),
-                gr.Checkbox(
-                    label="Strict Mode (Answer from File ONLY)",
-                    value=False
-                )
-            ]
-        )
+        # Get the list of existing sessions for the dropdown
+        existing_sessions = get_all_session_ids()
 
         with gr.Row():
-            # File Upload Component
-            file_upload = gr.File(label="Upload PDF or Text File", file_count="single", type="filepath")
-            status_box = gr.Textbox(label="Status", interactive=False)
+           # Session Management UI
+           gr.Markdown("#### Select Existing Session or Start New")
+           session_id_state = gr.State(lambda: str(uuid.uuid4()))
+           session_dropdown = gr.Dropdown(
+               label="Resume Session",
+               choices=existing_sessions,
+               value=None,
+               interactive=True
+            )
+           new_chat_btn = gr.Button("✨ Start New Chat")
+           
+           #Persona and Strict Mode UI
+           gr.Markdown("#### Persona & Settings")
+           persona_dropdown = gr.Dropdown(
+               choices=[
+                   "You are a helpful assistant.",
+                   "You are an export of UAS drone.",
+                   "You are an export of Counter-Rocket, Artillery, Mortar(C-RAM)",
+                   "You are an export of anti-UAS drone. system",
+                   "You are a poetic storyteller.",
+               ],
+               value="You are a helpful assistant.",
+               label="Persona"
+           )
+           strict_mode_checkbox = gr.Checkbox(
+               label="Strict Mode (Answer from File ONLY)",
+               value=False
+           )
+           
+           # File Upload UI
+           file_upload = gr.File(label="Upload PDF or Text File", file_count="single", type="filepath")
+           status_box = gr.Textbox(label="Status", interactive=False)
 
-        # Connect file upload to processing function
-        file_upload.change(
-            fn=process_file,
-            inputs=file_upload,
-            outputs=status_box
+        with gr.Column(scale=4):
+            chatbot = gr.Chatbot(label="Chat History", height=600)
+            msg_textbox = gr.Textbox(placeholder="Type your message here...", show_label=False, scale=3)
+            clear_btn = gr.ClearButton([msg_textbox, chatbot])
+        
+        # --- Event listener ---
+     
+        # for submitting message
+        msg_textbox.submit(
+            fn=respond,
+            inputs=[msg_textbox, chatbot, session_id_state, persona_dropdown, strict_mode_checkbox],
+            outputs=[msg_textbox, chatbot]
         )
+
+        # for New Chat button
+        def start_new_chat():
+            new_id = str(uuid.uuid4())
+            print(f"✨ Starting new chat with session ID: {new_id}")
+            # return new session ID, clear chatbot, and resets the dropdown
+            return new_id, [], None
+        
+        new_chat_btn.click(
+            fn=start_new_chat,
+            inputs=None,
+            outputs=[session_id_state, chatbot, session_dropdown]
+        )
+
+        # for selecting a session from dropdown
+        def load_chat_history(session_id):
+            if session_id is None:
+                return [], session_id # Return empty history and original session_id
+
+            history_obj = get_session_history(session_id)
+
+            gradio_history = []
+            for i in range(0, len(history_obj.messages), 2):
+                human_msg = history_obj.messages[i].content
+                ai_msg = history_obj.messages[i+1].content
+                gradio_history.append((human_msg, ai_msg))
+            
+            print(f"🔄 Resuming chat for session ID: {session_id}")
+            return gradio_history, session_id
+        
+        session_dropdown.change(
+            fn=load_chat_history,
+            inputs=[session_dropdown],
+            outputs=[chatbot, session_id_state]
+        )
+
+
+
+
+
+
+
+
+
+
+
+    
+    # Connect file upload to processing function
+    file_upload.change(
+        fn=process_file,
+        inputs=file_upload,
+        outputs=status_box
+    )
 
     demo.launch()
 
