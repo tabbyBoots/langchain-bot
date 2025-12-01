@@ -9,7 +9,6 @@ from langchain_core.output_parsers import StrOutputParser
 
 # add Memory to ChatBot
 from langchain_core.chat_history import BaseChatMessageHistory
-#from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_postgres import PostgresChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
@@ -25,17 +24,14 @@ load_dotenv()
 # 2. Initialize the Model
 llm = ChatOpenAI(model="gpt-4o-mini")
 
-# 3. Define the store for Conversation History
-#store = {}
-#def get_session_history(session_id: str) -> BaseChatMessageHistory:
-#    """Helper function to retrieve history for a given seession ID."""
-#    if session_id not in store:
-#        store[session_id] = ChatMessageHistory()
-#    return store[session_id]
-
 # 3. Define the store for Conversation History (using Postgres)
 # Connection string: postgresql://user:password@host:port/dbname
-DB_CONNECTION = "postgresql://langchain:langchain@localhost:5432/langchain_chat"
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+DB_NAME = os.getenv("DB_NAME")
+DB_CONNECTION=f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # Create a global connection to reuse
 try:
@@ -166,8 +162,6 @@ def chat_function(message, history, session_id, system_instruction, strict_mode)
             # Format: Source 1: Uploaded File, document.pdf, Page 2
             source_str = f"Source {i+1}: Uploaded File, {file_name}, Page {page_num}"
             sources_list.append(source_str)
-
-            #sources_text += f"Source {i+1}: {doc.page_content[:100]}...\n"
         
     # --- New Logic START ---
     if strict_mode and vector_store is not None:
@@ -201,63 +195,119 @@ def chat_function(message, history, session_id, system_instruction, strict_mode)
     
     return final_response
 
-def respond(message, chat_history, sesion_id, persona, strict_mode):
+def respond(message, chat_history, session_id, persona, strict_mode):
     """
     Call chat_function to get the LLM response.
     """
     bot_message = chat_function(message, chat_history, session_id, persona, strict_mode)
-    chat_history.append((message, bot_message))
+    
+    # Append in new Gradio format
+    chat_history.append({"role": "user", "content": message})
+    chat_history.append({"role": "assistant", "content": bot_message})
+    #chat_history.append((message, bot_message))
     return "", chat_history
-
 
 # 8. Launch the Gradio Chat Interface
 if __name__ == "__main__":
     print("--- Launching Gradio UI ---")
 
     with gr.Blocks(title="LangChain Bot with RAG") as demo:
-        gr.Markdown("### 🦜🔗 LangChain Bot with RAG & Memory")
+
+        # Header line
+        gr.Markdown(
+            """
+            # 🦜🔗 LangChain RAG Assistant
+            ### Your AI chatbot with document understanding and persist memory
+            """
+        )
+
+        # Connection status
+        with gr.Row():
+            if db_conn is not None:
+                gr.Markdown("✅ **Database:** Connected | ⚡ **Status:** Ready")
+            else:
+                gr.Markdown("⚠️ **Database:** Disconnected")
 
         # Get the list of existing sessions for the dropdown
         existing_sessions = get_all_session_ids()
 
         with gr.Row():
-           # Session Management UI
-           gr.Markdown("#### Select Existing Session or Start New")
-           session_id_state = gr.State(lambda: str(uuid.uuid4()))
-           session_dropdown = gr.Dropdown(
-               label="Resume Session",
-               choices=existing_sessions,
-               value=None,
-               interactive=True
-            )
-           new_chat_btn = gr.Button("✨ Start New Chat")
-           
-           #Persona and Strict Mode UI
-           gr.Markdown("#### Persona & Settings")
-           persona_dropdown = gr.Dropdown(
-               choices=[
-                   "You are a helpful assistant.",
-                   "You are an export of UAS drone.",
-                   "You are an export of Counter-Rocket, Artillery, Mortar(C-RAM)",
-                   "You are an export of anti-UAS drone. system",
-                   "You are a poetic storyteller.",
-               ],
-               value="You are a helpful assistant.",
-               label="Persona"
-           )
-           strict_mode_checkbox = gr.Checkbox(
-               label="Strict Mode (Answer from File ONLY)",
-               value=False
-           )
-           
-           # File Upload UI
-           file_upload = gr.File(label="Upload PDF or Text File", file_count="single", type="filepath")
-           status_box = gr.Textbox(label="Status", interactive=False)
+           # Left Sidebar - Controls  
+            with gr.Column(scale=1, min_width=300):
+                gr.Markdown("## 🎮 Controls")
 
-        with gr.Column(scale=4):
-            chatbot = gr.Chatbot(label="Chat History", height=600)
-            msg_textbox = gr.Textbox(placeholder="Type your message here...", show_label=False, scale=3)
-            clear_btn = gr.ClearButton([msg_textbox, chatbot])
+                # Session Management UI
+                with gr.Group():
+                    gr.Markdown("---")
+                    gr.Markdown("### 💬 Session Management")
+                    session_id_state = gr.State(lambda: str(uuid.uuid4()))
+                    session_dropdown = gr.Dropdown(
+                        label="📋 Resume Previous Chat",
+                        choices=get_all_session_ids(),
+                        value=None,
+                        interactive=True
+                    )
+                    new_chat_btn = gr.Button(
+                        "✨ Start New Chat",
+                        variant="primary"
+                    )
+                
+                # Persona Selection UI
+                with gr.Group():
+                    gr.Markdown("---")
+                    gr.Markdown("### 🎭 AI Persona")
+                    persona_dropdown = gr.Dropdown(
+                        choices=[
+                            "You are a helpful assistant.",
+                            "You are an export of UAS drone.",
+                            "You are an export of Counter-Rocket, Artillery, Mortar(C-RAM)",
+                            "You are an export of anti-UAS drone. system",
+                            "You are a poetic storyteller.",
+                        ],
+                        value="You are a helpful assistant.",
+                        label="Persona"
+                    )
+                    strict_mode_checkbox = gr.Checkbox(
+                        label="🔒 Strict Mode (Answer from file ONLY)",
+                        value=False
+                    )
+           
+                # File Upload UI
+                with gr.Group():
+                    gr.Markdown("---")
+                    gr.Markdown("#### 📄RAG Document")
+                    file_upload = gr.File(
+                        label="Upload PDF or Text File",
+                        file_count="single",
+                        type="filepath"
+                    )
+                    status_box = gr.Textbox(
+                        label="Upload Status", 
+                        interactive=False,
+                        placeholder="No file uploaded yet...",
+                        lines=2
+                    )
+                
+            # Right Side -Chat Interface
+
+            with gr.Column(scale=3):
+                gr.Markdown("## 💭 Conversation")
+                chatbot = gr.Chatbot(
+                    label="Chat History", 
+                    height=600,
+                    show_label=False
+                )
+                with gr.Row():
+                    msg_textbox = gr.Textbox(
+                        placeholder="Type your message here...", 
+                        show_label=False, 
+                        scale=9
+                    )
+                    #clear_btn = gr.ClearButton([msg_textbox, chatbot])
+                    clear_btn = gr.Button(
+                        "🗑️ Clear",
+                        scale=1
+                    )
         
         # --- Event listener ---
      
@@ -284,18 +334,26 @@ if __name__ == "__main__":
         # for selecting a session from dropdown
         def load_chat_history(session_id):
             if session_id is None:
-                return [], session_id # Return empty history and original session_id
-
-            history_obj = get_session_history(session_id)
-
-            gradio_history = []
-            for i in range(0, len(history_obj.messages), 2):
-                human_msg = history_obj.messages[i].content
-                ai_msg = history_obj.messages[i+1].content
-                gradio_history.append((human_msg, ai_msg))
-            
-            print(f"🔄 Resuming chat for session ID: {session_id}")
-            return gradio_history, session_id
+                 # If selection is cleared, start a new session
+                new_id = str(uuid.uuid4())
+                return [], new_id # Return empty history and original session_id
+            try:
+                history_obj = get_session_history(session_id)
+                gradio_history = []
+                for i in range(0, len(history_obj.messages), 2):
+                    human_msg = history_obj.messages[i].content
+                    ai_msg = history_obj.messages[i+1].content
+                    # Use new Gradio format
+                    gradio_history.append({"role": "user", "content": human_msg})
+                    gradio_history.append({"role": "assistant", "content": ai_msg})
+                    #gradio_history.append((human_msg, ai_msg))
+                print(f"🔄 Resuming chat for session ID: {session_id}")
+                return gradio_history, session_id
+            except Exception as e:
+                print(f"⚠️ Error loading history: {e}")
+                # Fallback to new session on error
+                new_id = str(uuid.uuid4())
+                return [], new_id
         
         session_dropdown.change(
             fn=load_chat_history,
@@ -303,25 +361,30 @@ if __name__ == "__main__":
             outputs=[chatbot, session_id_state]
         )
 
+        # Connect file upload to processing function
+        file_upload.change(
+            fn=process_file,
+            inputs=file_upload,
+            outputs=status_box
+        )
 
-
-
-
-
-
-
-
-
-
-    
-    # Connect file upload to processing function
-    file_upload.change(
-        fn=process_file,
-        inputs=file_upload,
-        outputs=status_box
+    demo.launch(
+        css="""
+        .gradio-container {
+            max-width: 1400px !important;
+            margin: 0 auto;
+        }
+        footer {
+            visibility: hidden;
+        }
+        .main {
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+        }
+        """
     )
-
-    demo.launch()
 
 # Run the app in background
 # nohup python main.py > gradio_output.log 2>&1 &

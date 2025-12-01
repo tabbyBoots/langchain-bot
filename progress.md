@@ -1,169 +1,458 @@
-# Progress: Building a Manual UI with Session Management
+# Progress: Advanced Chat History Management
 
-This guide provides step-by-step instructions to add a feature that allows users to select and resume previous chat sessions from the database.
+## New Features to Implement
 
-## Goal
-
-Modify the Gradio UI to include a dropdown for selecting existing chat sessions and a button to start a new chat. The selected session will be used to retrieve and continue the conversation.
+1. ✨ Hamburger button to show/hide chat history
+2. 📋 Add 'subject' column to database (default: first user question)
+3. 🖊️ Edit subject names
+4. 🗑️ Delete chat histories
+5. 📜 Replace dropdown with a better component (Accordion or custom list)
 
 ---
 
-### Step 1: Create a Function to Fetch Session IDs
+## Part 1: Database Schema Changes
 
-First, you need a function to query your `chat_history` table and retrieve a list of all unique `session_id`s. This will populate the session selection dropdown.
+### Step 1.1: Add Subject Column to Database
 
-Add the following Python code to `main.py`, preferably near your other database functions (like `get_session_history`).
+You need to add a 'subject' column to your `chat_history` table.
+
+**Option A: Modify existing table (recommended)**
+
+Run this SQL command to add the subject column:
+
+```sql
+-- Connect to PostgreSQL
+sudo -u postgres psql -d langchain_chat
+
+-- Add subject column (allows NULL for existing records)
+ALTER TABLE chat_history ADD COLUMN subject TEXT;
+
+-- Create index for better performance
+CREATE INDEX IF NOT EXISTS idx_chat_history_subject ON chat_history (subject);
+
+-- Exit
+\q
+```
+
+**Option B: Update the table creation code**
+
+In `main.py`, find the table creation code (around line 38-51) and update it:
+
+**Current code:**
+```python
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS chat_history (
+            id SERIAL PRIMARY KEY,
+            session_id UUID NOT NULL,
+            message JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);
+""")
+```
+
+**Replace with:**
+```python
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS chat_history (
+            id SERIAL PRIMARY KEY,
+            session_id UUID NOT NULL,
+            message JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            subject TEXT
+        );
+    CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_history_subject ON chat_history (subject);
+""")
+```
+
+---
+
+## Part 2: New Database Functions
+
+Add these new functions to `main.py` (after the existing database functions, around line 86):
+
+### Function 1: Get Sessions with Subjects
 
 ```python
-def get_all_session_ids() -> list[str]:
-    """Fetch all unique session IDs from the database."""
+def get_all_sessions_with_subjects() -> list[dict]:
+    """
+    Fetch all unique sessions with their subjects and first message timestamp.
+    Returns: [{"session_id": "...", "subject": "...", "created_at": "..."}, ...]
+    """
     if db_conn is None:
-        print("⚠️ No database connection, cannot fetch session IDs.")
+        print("⚠️ No database connection, cannot fetch sessions.")
         return []
     try:
         with db_conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT session_id FROM chat_history ORDER BY session_id;")
-            sessions = [row[0] for row in cur.fetchall()]
-            print(f"✅ Found sessions: {sessions}")
+            # Get unique sessions with their subject and earliest timestamp
+            cur.execute("""
+                SELECT
+                    session_id,
+                    subject,
+                    MIN(created_at) as created_at
+                FROM chat_history
+                GROUP BY session_id, subject
+                ORDER BY MIN(created_at) DESC;
+            """)
+            sessions = []
+            for row in cur.fetchall():
+                sessions.append({
+                    "session_id": str(row[0]),
+                    "subject": row[1] or "Untitled Chat",  # Default if NULL
+                    "created_at": row[2]
+                })
+            print(f"✅ Found {len(sessions)} sessions with subjects")
             return sessions
     except Exception as e:
-        print(f"⚠️ Error fetching session IDs: {e}")
+        print(f"⚠️ Error fetching sessions: {e}")
         return []
 ```
 
-### Step 2: Modify the Gradio UI Layout (`gr.Blocks`)
-
-You will now restructure your Gradio interface to accommodate the new session management components. This involves replacing `gr.ChatInterface` with a more manual layout using `gr.Chatbot`, `gr.Textbox`, and `gr.Button`.
-
-Inside your `if __name__ == "__main__":` block, replace the entire `with gr.Blocks() as demo:` section with the following code. This new layout gives you more control.
+### Function 2: Update Session Subject
 
 ```python
-    with gr.Blocks(title="LangChain Bot with RAG", theme=gr.themes.Default()) as demo:
-        gr.Markdown("### 🦜🔗 LangChain Bot with RAG & Memory")
-
-        # Get the list of existing sessions for the dropdown
-        existing_sessions = get_all_session_ids()
-
-        with gr.Row():
-            with gr.Column(scale=1):
-                # Session Management UI
-                gr.Markdown("#### Session Management")
-                session_id_state = gr.State(lambda: str(uuid.uuid4()))
-                session_dropdown = gr.Dropdown(
-                    label="Resume a Previous Chat",
-                    choices=existing_sessions,
-                    value=None,
-                    interactive=True
-                )
-                new_chat_btn = gr.Button("✨ Start New Chat")
-                
-                # Persona and Strict Mode UI
-                gr.Markdown("#### Persona & Settings")
-                persona_dropdown = gr.Dropdown(
-                    choices=[
-                        "You are a helpful assistant.",
-                        "You are an expert of UAS drone.",
-                        "You are an expert of Counter-Rocket, Artillery, Mortar(C-RAM)",
-                        "You are an expert of anti-UAS drone. system",
-                        "You are a poetic storyteller."
-                    ],
-                    value="You are a helpful assistant.",
-                    label="Persona"
-                )
-                strict_mode_checkbox = gr.Checkbox(
-                    label="Strict Mode (Answer from File ONLY)",
-                    value=False
-                )
-
-                # File Upload UI
-                gr.Markdown("#### RAG Document")
-                file_upload = gr.File(label="Upload PDF or Text File", file_count="single", type="filepath")
-                status_box = gr.Textbox(label="Status", interactive=False)
-
-            with gr.Column(scale=4):
-                # Main Chatbot UI
-                chatbot = gr.Chatbot(label="Chat History", height=600)
-                msg_textbox = gr.Textbox(placeholder="Type your message here...", show_label=False, scale=3)
-                clear_btn = gr.ClearButton([msg_textbox, chatbot])
-
-        # Connect file upload to processing function
-        file_upload.change(
-            fn=process_file,
-            inputs=file_upload,
-            outputs=status_box
-        )
+def update_session_subject(session_id: str, new_subject: str):
+    """
+    Update the subject for all messages in a session.
+    """
+    if db_conn is None:
+        print("⚠️ No database connection.")
+        return False
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("""
+                UPDATE chat_history
+                SET subject = %s
+                WHERE session_id = %s;
+            """, (new_subject, session_id))
+        print(f"✅ Updated subject for session {session_id}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error updating subject: {e}")
+        return False
 ```
 
-### Step 3: Create a New Chat Function
-
-The old `chat_function` was designed for `gr.ChatInterface`. You need a new function that works with `gr.Chatbot` and handles the history manually. This function will call your original `chat_function` to get the LLM response.
-
-Add this new function to `main.py`.
+### Function 3: Delete Session
 
 ```python
-def respond(message, chat_history, session_id, persona, strict_mode):
+def delete_session(session_id: str):
     """
-    New function for the manual gr.Chatbot interface.
-    It calls the original chat_function to get the LLM response.
+    Delete all messages for a given session.
     """
-    # The original function returns the full response text
-    bot_message = chat_function(message, chat_history, session_id, persona, strict_mode)
-    # Append the user message and the bot response to the history
-    chat_history.append((message, bot_message))
-    # Return an empty string to clear the textbox and the updated history
-    return "", chat_history
+    if db_conn is None:
+        print("⚠️ No database connection.")
+        return False
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM chat_history
+                WHERE session_id = %s;
+            """, (session_id,))
+        print(f"✅ Deleted session {session_id}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error deleting session: {e}")
+        return False
 ```
 
-### Step 4: Connect UI Components to Functions
-
-Finally, you need to wire up the buttons and text inputs to the correct functions. This involves setting up event listeners for submitting a message, starting a new chat, and selecting an old one.
-
-Add this code at the end of your `with gr.Blocks() as demo:` section in `main.py`.
+### Function 4: Set Subject for New Message
 
 ```python
-        # Event listener for submitting a message
-        msg_textbox.submit(
-            fn=respond,
-            inputs=[msg_textbox, chatbot, session_id_state, persona_dropdown, strict_mode_checkbox],
-            outputs=[msg_textbox, chatbot]
-        )
-
-        # Event listener for the "New Chat" button
-        def start_new_chat():
-            new_id = str(uuid.uuid4())
-            print(f"✨ Starting new chat with session ID: {new_id}")
-            # Returns the new ID, clears the chatbot, and resets the dropdown
-            return new_id, [], None
-
-        new_chat_btn.click(
-            fn=start_new_chat,
-            inputs=None,
-            outputs=[session_id_state, chatbot, session_dropdown]
-        )
-
-        # Event listener for selecting a session from the dropdown
-        def load_chat_history(session_id):
-            if session_id is None:
-                return [] # Do nothing if no session is selected
-            
-            history_obj = get_session_history(session_id)
-            # Convert LangChain history format to Gradio chatbot format
-            gradio_history = []
-            for i in range(0, len(history_obj.messages), 2):
-                human_msg = history_obj.messages[i].content
-                ai_msg = history_obj.messages[i+1].content
-                gradio_history.append((human_msg, ai_msg))
-            
-            print(f"🔄 Resuming chat for session ID: {session_id}")
-            return gradio_history, session_id
-
-        session_dropdown.change(
-            fn=load_chat_history,
-            inputs=[session_dropdown],
-            outputs=[chatbot, session_id_state]
-        )
+def save_message_with_subject(session_id: str, subject: str = None):
+    """
+    Update the subject for the most recent message in a session.
+    Called after the first user message to set the default subject.
+    """
+    if db_conn is None or subject is None:
+        return
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("""
+                UPDATE chat_history
+                SET subject = %s
+                WHERE session_id = %s AND subject IS NULL;
+            """, (subject, session_id))
+        print(f"✅ Set subject for session {session_id}: {subject}")
+    except Exception as e:
+        print(f"⚠️ Error setting subject: {e}")
 ```
 
 ---
 
-After completing these steps, run your `main.py` file. The application will now have the session management features you wanted. You can now select old chats from the dropdown to continue them, or start a new one.
+## Part 3: Update the respond Function
+
+Modify the `respond` function (around line 198) to save the first message as the subject:
+
+**Find this section:**
+```python
+def respond(message, chat_history, session_id, persona, strict_mode):
+    """
+    Call chat_function to get the LLM response.
+    """
+    bot_message = chat_function(message, chat_history, session_id, persona, strict_mode)
+
+    # Append in new Gradio format
+    chat_history.append({"role": "user", "content": message})
+    chat_history.append({"role": "assistant", "content": bot_message})
+    return "", chat_history
+```
+
+**Replace with:**
+```python
+def respond(message, chat_history, session_id, persona, strict_mode):
+    """
+    Call chat_function to get the LLM response.
+    """
+    # Check if this is the first message (empty history)
+    is_first_message = len(chat_history) == 0
+
+    bot_message = chat_function(message, chat_history, session_id, persona, strict_mode)
+
+    # Append in new Gradio format
+    chat_history.append({"role": "user", "content": message})
+    chat_history.append({"role": "assistant", "content": bot_message})
+
+    # If first message, save it as the subject (truncate to 50 chars)
+    if is_first_message:
+        subject = message[:50] + ("..." if len(message) > 50 else "")
+        save_message_with_subject(session_id, subject)
+
+    return "", chat_history
+```
+
+---
+
+## Part 4: New UI Design with Accordion
+
+Replace the dropdown with an Accordion that shows a list of chat histories with edit/delete buttons.
+
+### Step 4.1: Find the UI Section
+
+In `main.py`, find the section with the session management UI (around line 254-267).
+
+### Step 4.2: Replace with New Design
+
+**Remove the old dropdown section:**
+```python
+# Remove this entire section:
+with gr.Group():
+    gr.Markdown("---")
+    gr.Markdown("### 💬 Session Management")
+    session_id_state = gr.State(lambda: str(uuid.uuid4()))
+    session_dropdown = gr.Dropdown(...)
+    new_chat_btn = gr.Button(...)
+```
+
+**Replace with this new Accordion design:**
+```python
+# Session Management with Accordion
+gr.Markdown("---")
+gr.Markdown("### 💬 Session Management")
+session_id_state = gr.State(lambda: str(uuid.uuid4()))
+
+with gr.Row():
+    new_chat_btn = gr.Button(
+        "✨ Start New Chat",
+        variant="primary",
+        scale=3
+    )
+    toggle_history_btn = gr.Button(
+        "☰ History",
+        variant="secondary",
+        scale=1
+    )
+
+# History panel (initially visible, but can be toggled)
+history_panel = gr.Column(visible=True)
+
+with history_panel:
+    gr.Markdown("#### 📜 Chat History")
+
+    # This will hold the list of sessions
+    sessions_data = gr.State(get_all_sessions_with_subjects())
+
+    # Create a dynamic list of session buttons
+    session_list = gr.HTML(value="<p>Loading sessions...</p>")
+
+    # Selected session state
+    selected_session = gr.State(None)
+
+    # Edit subject interface (hidden by default)
+    with gr.Row(visible=False) as edit_subject_row:
+        subject_input = gr.Textbox(
+            label="Edit Subject",
+            placeholder="Enter new subject name",
+            scale=3
+        )
+        save_subject_btn = gr.Button("💾 Save", scale=1, size="sm")
+        cancel_edit_btn = gr.Button("❌ Cancel", scale=1, size="sm")
+```
+
+---
+
+## Part 5: Create HTML for Session List
+
+Add this helper function (before the Gradio UI section, around line 200):
+
+```python
+def create_session_list_html(sessions):
+    """
+    Create HTML for the session list with edit/delete buttons.
+    """
+    if not sessions:
+        return "<p style='color: gray; font-style: italic;'>No chat history yet. Start a new chat!</p>"
+
+    html = "<div style='max-height: 400px; overflow-y: auto;'>"
+
+    for session in sessions:
+        session_id = session['session_id']
+        subject = session['subject']
+        created_at = session['created_at'].strftime('%Y-%m-%d %H:%M') if session['created_at'] else 'Unknown'
+
+        # Truncate subject if too long
+        display_subject = subject[:40] + "..." if len(subject) > 40 else subject
+
+        html += f"""
+        <div style='
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            margin: 8px 0;
+            background: #f9f9f9;
+            transition: background 0.2s;
+        '
+        onmouseover="this.style.background='#e8f4f8'"
+        onmouseout="this.style.background='#f9f9f9'">
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <div style='flex-grow: 1; cursor: pointer;' onclick='alert("Load session: {session_id}")'>
+                    <strong>{display_subject}</strong><br>
+                    <small style='color: #666;'>{created_at}</small>
+                </div>
+                <div style='display: flex; gap: 5px;'>
+                    <button onclick='alert("Edit: {session_id}")'
+                            style='background: #4CAF50; color: white; border: none;
+                                   padding: 5px 10px; border-radius: 4px; cursor: pointer;'>
+                        ✏️
+                    </button>
+                    <button onclick='alert("Delete: {session_id}")'
+                            style='background: #f44336; color: white; border: none;
+                                   padding: 5px 10px; border-radius: 4px; cursor: pointer;'>
+                        🗑️
+                    </button>
+                </div>
+            </div>
+        </div>
+        """
+
+    html += "</div>"
+    return html
+```
+
+---
+
+## Part 6: Event Handlers
+
+Add these event handlers in the Gradio UI section (after defining the components):
+
+### Handler 1: Toggle History Panel
+
+```python
+def toggle_history_visibility(current_visible):
+    """Toggle the history panel visibility."""
+    return not current_visible
+
+toggle_history_btn.click(
+    fn=lambda visible: gr.Column(visible=not visible),
+    inputs=[history_panel],
+    outputs=[history_panel]
+)
+```
+
+### Handler 2: Load Session List
+
+```python
+def refresh_session_list():
+    """Refresh the session list HTML."""
+    sessions = get_all_sessions_with_subjects()
+    html = create_session_list_html(sessions)
+    return html, sessions
+
+# Call this when the page loads and after actions
+session_list.change(
+    fn=refresh_session_list,
+    inputs=None,
+    outputs=[session_list, sessions_data]
+)
+```
+
+### Handler 3: Update New Chat Button
+
+Update the new chat button handler to refresh the session list:
+
+```python
+def start_new_chat():
+    new_id = str(uuid.uuid4())
+    print(f"✨ Starting new chat with session ID: {new_id}")
+    # Refresh session list
+    sessions = get_all_sessions_with_subjects()
+    html = create_session_list_html(sessions)
+    return new_id, [], html
+
+new_chat_btn.click(
+    fn=start_new_chat,
+    inputs=None,
+    outputs=[session_id_state, chatbot, session_list]
+)
+```
+
+---
+
+## Summary of Architecture
+
+```
+┌─────────────────────────────────────────┐
+│  🦜🔗 LangChain RAG Assistant           │
+├──────────────┬──────────────────────────┤
+│  🎮 Controls │  💭 Conversation         │
+│              │                          │
+│  [✨ New]    │  [Chat messages]         │
+│  [☰ History] │                          │
+│              │                          │
+│  ┌─────────┐│                          │
+│  │📜 History││                          │
+│  │         ││                          │
+│  │ Chat 1  ││                          │
+│  │  ✏️ 🗑️  ││                          │
+│  │ Chat 2  ││                          │
+│  │  ✏️ 🗑️  ││                          │
+│  └─────────┘│                          │
+└──────────────┴──────────────────────────┘
+```
+
+---
+
+## Implementation Order
+
+**Do these in order:**
+
+1. ✅ Add 'subject' column to database (SQL command)
+2. ✅ Add new database functions (4 functions)
+3. ✅ Update `respond` function to save first message as subject
+4. ✅ Add `create_session_list_html` helper function
+5. ✅ Replace dropdown UI with new Accordion design
+6. ✅ Add event handlers for toggle, refresh, load, edit, delete
+7. ✅ Test each feature one by one
+
+---
+
+## Alternative: Simpler Approach
+
+If the above seems too complex, here's a simpler approach:
+
+**Use Gradio's built-in components:**
+- Keep using Dropdown but populate it with subjects instead of session_ids
+- Add separate buttons for "Edit Subject" and "Delete Session"
+- Use Modal/Dialog for editing (if available in your Gradio version)
+
+Let me know which approach you prefer, and I can provide more specific instructions!
