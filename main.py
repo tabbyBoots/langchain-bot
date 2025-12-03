@@ -178,7 +178,6 @@ def save_message_with_subject(session_id: str, subject: str = None):
         print(f"⚠️ Error setting subject: {e}")        
 
 # 4. --- Core Logic with Memory ---
-
 memory_prompt = ChatPromptTemplate.from_messages([
     ("system", "{system_message}"), # use dynamic variable instead of hardcoded string 
     MessagesPlaceholder(variable_name="history"),
@@ -197,7 +196,6 @@ with_message_history = RunnableWithMessageHistory(
 )
 
 # 7. --- For Gradio Integration ---
-
 def create_session_list_html(sessions):
     """
     Create HTML for the session list with edit/delete buttons and 3-dot menu.
@@ -245,7 +243,6 @@ def create_session_list_html(sessions):
 
     html += "</div>"
     return html
-
 
 # Helper functions for session management UI
 def handle_load_session(session_id):
@@ -433,6 +430,45 @@ if __name__ == "__main__":
         session_id_state = gr.State(lambda: str(uuid.uuid4()))
         sidebar_visible = gr.State(True)
 
+        
+        # Persona and Strict Mode
+        with gr.Row():
+                
+            with gr.Column(scale=3, min_width=150):
+            # Persona Selection UI
+                gr.Markdown("### 🎭 AI Persona")
+                persona_dropdown = gr.Dropdown(
+                    choices=[
+                        "You are a helpful assistant.",
+                        "You are an expert of UAS drone.",
+                        "You are an expert of Counter-Rocket, Artillery, Mortar(C-RAM)",
+                        "You are an expert of anti-UAS drone system",
+                        "You are a poetic storyteller.",
+                    ],
+                    value="You are a helpful assistant.",
+                    label="Select Persona"
+                )
+                strict_mode_checkbox = gr.Checkbox(
+                    label="🔒 Strict Mode (Answer from file ONLY)",
+                    value=False
+                )
+                 
+            with gr.Column():  
+    
+            # File Upload UI
+                gr.Markdown("### 📄 RAG Document")
+                file_upload = gr.File(
+                    label="Upload PDF or Text File",
+                    file_count="single",
+                    type="filepath"
+                )
+                status_box = gr.Textbox(
+                    label="Upload Status",
+                    interactive=False,
+                    placeholder="No file uploaded yet...",
+                    lines=2
+                )
+
         with gr.Row(elem_id="main-container"):
             # Left Sidebar - Session Management
             sidebar = gr.Column(scale=1, min_width=280, elem_id="sidebar", elem_classes="sidebar-shown")
@@ -469,42 +505,9 @@ if __name__ == "__main__":
                         save_rename_btn = gr.Button("Save", variant="primary", size="sm")
                         cancel_rename_btn = gr.Button("Cancel", size="sm")
 
-                # Persona Selection UI
-                gr.Markdown("---")
-                gr.Markdown("### 🎭 AI Persona")
-                persona_dropdown = gr.Dropdown(
-                    choices=[
-                        "You are a helpful assistant.",
-                        "You are an expert of UAS drone.",
-                        "You are an expert of Counter-Rocket, Artillery, Mortar(C-RAM)",
-                        "You are an expert of anti-UAS drone system",
-                        "You are a poetic storyteller.",
-                    ],
-                    value="You are a helpful assistant.",
-                    label="Select Persona"
-                )
-                strict_mode_checkbox = gr.Checkbox(
-                    label="🔒 Strict Mode (Answer from file ONLY)",
-                    value=False
-                )
-
-                # File Upload UI
-                gr.Markdown("---")
-                gr.Markdown("### 📄 RAG Document")
-                file_upload = gr.File(
-                    label="Upload PDF or Text File",
-                    file_count="single",
-                    type="filepath"
-                )
-                status_box = gr.Textbox(
-                    label="Upload Status",
-                    interactive=False,
-                    placeholder="No file uploaded yet...",
-                    lines=2
-                )
-
             # Right Side - Chat Interface
-            with gr.Column(scale=3, elem_id="chat-column"):
+            with gr.Column(elem_id="chat-column"): # scale=3
+                
                 chatbot = gr.Chatbot(
                     label="Chat History",
                     height=550,
@@ -519,10 +522,11 @@ if __name__ == "__main__":
                         container=False
                     )
                     clear_btn = gr.Button(
-                        "🗑️",
-                        scale=1,
-                        size="sm"
+                        "🗑️" #,
+                        #scale=1,
+                        #size="sm"
                     )
+                
 
         # Hidden components for JavaScript callbacks
         # Using textboxes for data + buttons for triggering events
@@ -905,6 +909,40 @@ if __name__ == "__main__":
             border: 1px solid #ced4da !important;
         }
 
+        /* Force light backgrounds on all Gradio internal components */
+        .svelte-1gfkn6j,
+        .svelte-1ed2p3z,
+        .prose,
+        div[data-testid],
+        .gr-box,
+        .gr-input,
+        .gr-form,
+        .gr-padded {
+            background: white !important;
+            color: #212529 !important;
+        }
+
+        /* Force dropdown options to be light */
+        .dropdown-content,
+        .options,
+        [data-testid="dropdown-option"] {
+            background: white !important;
+            color: #212529 !important;
+        }
+
+        /* Fix any remaining dark components */
+        * {
+            background-color: inherit;
+        }
+
+        /* Override Gradio's dark mode if it's being applied */
+        :root {
+            --body-background-fill: #e9ecef;
+            --background-fill-primary: white;
+            --background-fill-secondary: #f8f9fa;
+            --color-accent: #0066cc;
+        }
+
         /* Labels - dark text */
         label,
         .label {
@@ -962,9 +1000,9 @@ if __name__ == "__main__":
         /* Main container */
         #main-container {
             display: flex;
-            height: calc(100vh - 180px);
             margin: 0;
             gap: 0;
+            min-height:600px;
         }
 
         /* Sidebar */
@@ -976,7 +1014,7 @@ if __name__ == "__main__":
             padding: 1rem;
             padding-bottom: 2rem;
             transition: all 0.3s ease;
-            max-height: calc(100vh - 180px) !important;
+            max-height: none !important;
         }
 
         /* Sidebar text colors */
