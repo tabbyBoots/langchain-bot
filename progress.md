@@ -6,6 +6,11 @@
 - Database table with session support
 - Basic session management (create new, resume existing)
 - Auto-save first message as subject
+- **(__FIXED__)** Database connection and schema issues:
+  - Fixed database name mismatch in .env file (LangChain_chat → langchain_chat)
+  - Added missing 'subject' column to chat_history table
+  - Implemented automatic migration logic in main.py (checks and adds missing columns on startup)
+  - Added proper indexes for performance optimization
 
 ### 🔧 Current Tasks
 

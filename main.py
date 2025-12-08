@@ -40,14 +40,34 @@ try:
 
     # Manually create the table if it doesn't exist
     with db_conn.cursor() as cur:
+        # Step 1: Create table with initial schema
         cur.execute("""
             CREATE TABLE IF NOT EXISTS chat_history (
                     id SERIAL PRIMARY KEY,
                     session_id UUID NOT NULL,
                     message JSONB NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    subject TEXT
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+        """)
+
+        # Step 2: Add missing columns (migration logic)
+        # Check if 'subject' column exists, if not add it
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'chat_history'
+                    AND column_name = 'subject'
+                ) THEN
+                    ALTER TABLE chat_history ADD COLUMN subject TEXT;
+                END IF;
+            END $$;
+        """)
+
+        # Step 3: Create indexes
+        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);
             CREATE INDEX IF NOT EXISTS idx_chat_history_subject ON chat_history (subject);
         """)
@@ -97,14 +117,15 @@ def get_all_sessions_with_subjects() -> list[dict]:
     try:
         with db_conn.cursor() as cur:
             # Get sessions with subject and first timestamp
+            # Note: GROUP BY only session_id (not subject) to get one row per session
             cur.execute("""
                 SELECT
                         session_id,
                         COALESCE(MAX(subject), 'Untitled Chat') as subject,
                         MIN(created_at) as created_at
                 FROM chat_history
-                GROUP BY session_id, subject
-                Order BY MIN(created_at) DESC;
+                GROUP BY session_id
+                ORDER BY MIN(created_at) DESC;
             """
             )
             sessions = []
@@ -129,15 +150,35 @@ def update_session_subject(session_id: str, new_subject: str):
         return False
     try:
         with db_conn.cursor() as cur:
+            # First, check how many rows will be affected
+            cur.execute("""
+                SELECT COUNT(*) FROM chat_history WHERE session_id = %s;
+            """, (session_id,))
+            count_before = cur.fetchone()[0]
+            print(f"[update_session_subject] Found {count_before} messages for session {session_id}")
+
+            # Update the subject
             cur.execute("""
                 UPDATE chat_history
-                SET subject =%s
+                SET subject = %s
                 WHERE session_id = %s;
             """, (new_subject, session_id))
-        print(f"✅ Updated subject for session {session_id}")
+
+            rows_affected = cur.rowcount
+            print(f"[update_session_subject] ✅ Updated {rows_affected} rows to subject: '{new_subject}'")
+
+            # Verify the update
+            cur.execute("""
+                SELECT DISTINCT subject FROM chat_history WHERE session_id = %s;
+            """, (session_id,))
+            subjects_after = cur.fetchall()
+            print(f"[update_session_subject] Verification - Distinct subjects after update: {subjects_after}")
+
         return True
     except Exception as e:
         print(f"⚠️ Error updating subject: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     
 def delete_session(session_id: str):
@@ -278,16 +319,23 @@ def handle_load_session(session_id):
 
 def handle_rename_session(session_id, new_subject):
     """Rename a session."""
+    print(f"[handle_rename_session] Called with session_id='{session_id}', new_subject='{new_subject}'")
+    print(f"[handle_rename_session] Validation: session_id={bool(session_id)}, new_subject={bool(new_subject)}")
+
     if not session_id or not new_subject:
+        print(f"[handle_rename_session] ❌ Validation failed!")
         return create_session_list_html(get_all_sessions_with_subjects()), "Please provide a valid name."
 
+    print(f"[handle_rename_session] ✅ Validation passed, calling update_session_subject...")
     success = update_session_subject(session_id, new_subject)
     sessions = get_all_sessions_with_subjects()
     html = create_session_list_html(sessions)
 
     if success:
+        print(f"[handle_rename_session] ✅ Successfully renamed to '{new_subject}'")
         return html, f"✅ Session renamed to '{new_subject}'"
     else:
+        print(f"[handle_rename_session] ❌ Database update failed")
         return html, "❌ Failed to rename session"
 
 def handle_delete_session(session_id):
@@ -473,16 +521,17 @@ if __name__ == "__main__":
                 )
 
                 # Rename dialog
+                rename_session_id_state = gr.State("")  # Use State instead of hidden textbox
                 with gr.Group(visible=False, elem_id="rename-dialog") as rename_dialog:
                     gr.Markdown("### ✏️ Rename Session")
-                    rename_session_id = gr.Textbox(visible=False)
                     rename_input = gr.Textbox(
                         label="New Name",
-                        placeholder="Enter new session name"
+                        placeholder="Enter new session name",
+                        elem_id="rename-input-box"
                     )
-                    with gr.Row():
-                        save_rename_btn = gr.Button("Save", variant="primary", size="sm")
-                        cancel_rename_btn = gr.Button("Cancel", size="sm")
+                    with gr.Row(elem_id="rename-buttons-row"):
+                        save_rename_btn = gr.Button("Save", variant="primary", size="sm", elem_id="save-rename-btn")
+                        cancel_rename_btn = gr.Button("Cancel", size="sm", elem_id="cancel-rename-btn")
 
             # Right Side - Chat Interface
             with gr.Column(scale=4, min_width=250, elem_id="chat-column"): # 
@@ -644,34 +693,109 @@ if __name__ == "__main__":
         def show_rename_dialog(session_id, current_subject):
             print(f"[Backend] show_rename_dialog called: session_id={session_id}, subject={current_subject}")
             if session_id and session_id.strip():
-                print(f"[Backend] Showing rename dialog")
-                return gr.update(visible=True), session_id, current_subject
+                print(f"[Backend] Showing rename dialog with subject='{current_subject}'")
+                # Return: (dialog visibility, session_id state, input value)
+                return (
+                    gr.update(visible=True),  # Show dialog
+                    session_id,               # Store session_id in State
+                    gr.update(value=current_subject)  # Pre-fill textbox
+                )
             print("[Backend] Not showing - empty session_id")
-            return gr.update(visible=False), "", ""
+            return gr.update(visible=False), "", gr.update(value="")
 
         js_edit_session_btn.click(
             fn=show_rename_dialog,
             inputs=[js_edit_session_id_data, js_edit_session_subject_data],
-            outputs=[rename_dialog, rename_session_id, rename_input]
+            outputs=[rename_dialog, rename_session_id_state, rename_input]
+        ).then(
+            fn=None,
+            inputs=None,
+            outputs=None,
+            js="""() => {
+                console.log('[Edit] Post-show: Ensuring dialog is visible');
+                setTimeout(() => {
+                    const dialog = document.getElementById('rename-dialog');
+                    if (dialog) {
+                        dialog.style.display = 'block';
+                        dialog.style.visibility = 'visible';
+                        dialog.style.opacity = '1';
+                        console.log('[Edit] Dialog forced visible via JavaScript');
+
+                        // Focus on the input
+                        const input = dialog.querySelector('#rename-input-box textarea, #rename-input-box input');
+                        if (input) {
+                            input.focus();
+                            input.select();
+                            console.log('[Edit] Input focused and selected');
+                        }
+                    }
+                }, 100);
+            }"""
         )
 
         # Save rename
         def save_rename(session_id, new_name):
+            print(f"[Backend] save_rename called with: session_id='{session_id}', new_name='{new_name}'")
+            print(f"[Backend] Type check: session_id type={type(session_id)}, new_name type={type(new_name)}")
+            print(f"[Backend] Value check: session_id empty={not session_id}, new_name empty={not new_name}")
+
+            # If session_id is empty, it means the dialog wasn't properly opened
+            # Just close the dialog and return current state
+            if not session_id or not session_id.strip():
+                print(f"[Backend] ⚠️ save_rename called with empty session_id - dialog was not properly opened!")
+                print(f"[Backend] Closing dialog without making changes")
+                sessions = get_all_sessions_with_subjects()
+                html = create_session_list_html(sessions)
+                return html, gr.update(visible=False), "", ""
+
+            # Strip whitespace from new_name if it exists
+            if new_name:
+                new_name = new_name.strip()
+                print(f"[Backend] After strip: new_name='{new_name}'")
+
             html, msg = handle_rename_session(session_id, new_name)
             print(f"[Backend] Rename result: {msg}")
+
+            # Log what we're returning
+            print(f"[Backend] Returning to frontend:")
+            print(f"  - session_list: Updated HTML with {html.count('session-item')} sessions")
+            print(f"  - rename_dialog: visible=False")
+            print(f"  - rename_session_id_state: '' (cleared)")
+            print(f"  - rename_input: '' (cleared)")
+
             return html, gr.update(visible=False), "", ""
 
         save_rename_btn.click(
             fn=save_rename,
-            inputs=[rename_session_id, rename_input],
-            outputs=[session_list, rename_dialog, rename_session_id, rename_input]
+            inputs=[rename_session_id_state, rename_input],
+            outputs=[session_list, rename_dialog, rename_session_id_state, rename_input],
+            js="""(session_id, new_name) => {
+                console.log('[Save] Save button clicked with:', session_id, new_name);
+                return [session_id, new_name];
+            }"""
+        ).then(
+            fn=None,
+            inputs=None,
+            outputs=None,
+            js="""() => {
+                console.log('[Save] Post-save: Forcing dialog to hide');
+                const dialog = document.getElementById('rename-dialog');
+                if (dialog) {
+                    dialog.style.display = 'none';
+                    console.log('[Save] Dialog hidden via JavaScript');
+                }
+            }"""
         )
 
         # Cancel rename
+        def cancel_rename():
+            print("[Backend] Cancel button clicked - hiding rename dialog")
+            return gr.update(visible=False), "", gr.update(value="")
+
         cancel_rename_btn.click(
-            fn=lambda: (gr.update(visible=False), "", ""),
+            fn=cancel_rename,
             inputs=None,
-            outputs=[rename_dialog, rename_session_id, rename_input]
+            outputs=[rename_dialog, rename_session_id_state, rename_input]
         )
 
         # Delete session - triggered by button click
@@ -826,32 +950,58 @@ if __name__ == "__main__":
             const sessionId = sessionItem.dataset.sessionId;
             const subject = sessionItem.dataset.subject;
 
+            console.log('[Rename] ========== START RENAME ==========');
             console.log('[Rename] Editing session:', sessionId, 'subject:', subject);
 
             const idInput = findGradioInput('js_edit_session_id_data');
             const subjectInput = findGradioInput('js_edit_session_subject_data');
             const btn = document.getElementById('js_edit_session_btn');
 
+            console.log('[Rename] Found elements:', {
+                idInput: idInput ? 'Found' : 'NOT FOUND',
+                subjectInput: subjectInput ? 'Found' : 'NOT FOUND',
+                btn: btn ? 'Found' : 'NOT FOUND'
+            });
+
             if (idInput && subjectInput && btn) {
                 // Set values and trigger input events
                 idInput.value = sessionId;
                 idInput.dispatchEvent(new Event('input', { bubbles: true }));
+                idInput.dispatchEvent(new Event('change', { bubbles: true }));
+
                 subjectInput.value = subject;
                 subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
+                subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
 
-                // Wait for Gradio to process before clicking
+                console.log('[Rename] Set input values:', {
+                    idInputValue: idInput.value,
+                    subjectInputValue: subjectInput.value
+                });
+
+                // Wait longer for Gradio to process before clicking
                 setTimeout(() => {
+                    console.log('[Rename] About to click button, verifying values:', {
+                        idInputValue: idInput.value,
+                        subjectInputValue: subjectInput.value
+                    });
                     btn.click();
-                    console.log('[Rename] Clicked edit button with:', idInput.value, subjectInput.value);
-                }, 150);
+                    console.log('[Rename] ✓ Button clicked successfully');
+                }, 300);  // Increased from 150ms to 300ms
             } else {
-                console.error('[Rename] Could not find elements:', { idInput, subjectInput, btn });
+                console.error('[Rename] ❌ Could not find required elements!');
+                console.error('[Rename] Details:', {
+                    idInput: idInput,
+                    subjectInput: subjectInput,
+                    btn: btn
+                });
+                alert('Error: Could not open rename dialog. Please refresh the page and try again.');
             }
 
             // Close dropdown
             document.querySelectorAll('.dropdown-menu').forEach(menu => {
                 menu.classList.remove('show');
             });
+            console.log('[Rename] ========== END RENAME CLICK ==========');
         }
 
         // Delete session - set data and click button (with delay)
@@ -907,6 +1057,57 @@ if __name__ == "__main__":
                     // Try to find by searching for any hidden textboxes
                     const allTextboxes = document.querySelectorAll('textarea, input[type="text"]');
                     console.log('[Gradio] All textboxes:', allTextboxes);
+                }
+
+                // Debug: Check for rename dialog buttons
+                const saveBtn = document.getElementById('save-rename-btn');
+                const cancelBtn = document.getElementById('cancel-rename-btn');
+                const renameDialog = document.getElementById('rename-dialog');
+                console.log('[Gradio] Rename dialog elements:', {
+                    dialog: renameDialog,
+                    saveBtn: saveBtn,
+                    cancelBtn: cancelBtn
+                });
+
+                // Add click listeners to buttons for debugging
+                if (saveBtn) {
+                    saveBtn.addEventListener('click', () => {
+                        console.log('[DEBUG] Save button clicked!');
+                    });
+                }
+                if (cancelBtn) {
+                    cancelBtn.addEventListener('click', () => {
+                        console.log('[DEBUG] Cancel button clicked!');
+                    });
+                }
+
+                // Watch for rename dialog to become visible
+                if (renameDialog) {
+                    const observer = new MutationObserver((mutations) => {
+                        mutations.forEach((mutation) => {
+                            if (mutation.attributeName === 'style' || mutation.attributeName === 'class') {
+                                const isVisible = renameDialog.style.display !== 'none' &&
+                                                 !renameDialog.classList.contains('hidden');
+                                if (isVisible) {
+                                    console.log('[DEBUG] Rename dialog is now visible');
+                                    // Re-check buttons after dialog becomes visible
+                                    setTimeout(() => {
+                                        const saveBtn = document.getElementById('save-rename-btn');
+                                        const cancelBtn = document.getElementById('cancel-rename-btn');
+                                        const renameInput = document.getElementById('rename-input-box');
+                                        console.log('[DEBUG] After visibility change:', {
+                                            saveBtn: saveBtn,
+                                            cancelBtn: cancelBtn,
+                                            renameInput: renameInput,
+                                            saveBtnRect: saveBtn?.getBoundingClientRect(),
+                                            cancelBtnRect: cancelBtn?.getBoundingClientRect()
+                                        });
+                                    }, 100);
+                                }
+                            }
+                        });
+                    });
+                    observer.observe(renameDialog, { attributes: true, attributeFilter: ['style', 'class'] });
                 }
             }, 500);
         });
@@ -1206,9 +1407,20 @@ if __name__ == "__main__":
             background: #fff3cd !important;
             border: 2px solid #ffc107 !important;
             border-radius: 8px !important;
-            padding: 1rem !important;
+            padding: 1.5rem !important;
             margin: 1rem 0 !important;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2) !important;
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            position: relative !important;
+            z-index: 100 !important;
+        }
+
+        /* Ensure rename dialog content is on top */
+        #rename-dialog > * {
+            position: relative !important;
+            z-index: 101 !important;
         }
 
         #rename-dialog * {
@@ -1225,6 +1437,74 @@ if __name__ == "__main__":
             background: white !important;
             color: #212529 !important;
             border: 1px solid #ffc107 !important;
+        }
+
+        /* Rename input box */
+        #rename-input-box,
+        #rename-input-box * {
+            background: white !important;
+            color: #212529 !important;
+        }
+
+        /* Rename buttons row - ensure it's visible and on top */
+        #rename-buttons-row,
+        #rename-dialog .gr-row,
+        #rename-dialog [class*="row"] {
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            position: relative !important;
+            z-index: 102 !important;
+            gap: 0.5rem !important;
+            margin-top: 1rem !important;
+        }
+
+        /* Specific button IDs for maximum visibility */
+        #save-rename-btn,
+        #cancel-rename-btn,
+        #rename-dialog button {
+            display: inline-block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            padding: 0.75rem 1.5rem !important;
+            margin: 0 !important;
+            border: 2px solid #dee2e6 !important;
+            border-radius: 6px !important;
+            background: white !important;
+            color: #212529 !important;
+            cursor: pointer !important;
+            font-size: 1rem !important;
+            font-weight: 600 !important;
+            transition: all 0.2s !important;
+            min-width: 100px !important;
+            height: auto !important;
+            position: relative !important;
+            z-index: 103 !important;
+            pointer-events: auto !important;
+        }
+
+        #rename-dialog button:hover {
+            background: #f8f9fa !important;
+            border-color: #adb5bd !important;
+            transform: translateY(-1px) !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+        }
+
+        /* Primary button (Save) - blue with white text */
+        #save-rename-btn,
+        #rename-dialog button[variant="primary"],
+        #rename-dialog .primary {
+            background: #0066cc !important;
+            color: white !important;
+            border-color: #0066cc !important;
+        }
+
+        #save-rename-btn:hover,
+        #rename-dialog button[variant="primary"]:hover,
+        #rename-dialog .primary:hover {
+            background: #0052a3 !important;
+            border-color: #0052a3 !important;
+            color: white !important;
         }
 
         /* Chat column */

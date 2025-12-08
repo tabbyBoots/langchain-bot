@@ -166,61 +166,93 @@ def save_message_with_subject(session_id: str, subject: str = None):
 
 ---
 
-## Database Schema Update
+## **(__FIXED__)** Database Schema Update - Automatic Migration
 
-If you need to add the subject column to the database:
+**Status:** ✅ Implemented in main.py (lines 41-73)
 
-```sql
--- Connect to PostgreSQL
-docker exec -it langchain_postgres psql -U langchain -d langchain_chat
+### What Was Fixed:
+1. **Database name mismatch:** Changed `.env` from `LangChain_chat` to `langchain_chat`
+2. **Missing subject column:** Automatically added on application startup
+3. **Migration logic:** Implemented self-healing schema updates
 
--- Add subject column (allows NULL for existing records)
-ALTER TABLE chat_history ADD COLUMN subject TEXT;
+### Current Implementation:
+The application now automatically:
+- Creates the base table if it doesn't exist
+- Checks for missing columns (like `subject`) and adds them
+- Creates required indexes for performance
 
--- Create index for better performance
-CREATE INDEX IF NOT EXISTS idx_chat_history_subject ON chat_history (subject);
-
--- Exit
-\q
-```
-
-Or update the table creation code in main.py (around line 38-51):
-
+**Key Code (main.py lines 43-73):**
 ```python
+# Step 1: Create table with initial schema
 cur.execute("""
     CREATE TABLE IF NOT EXISTS chat_history (
-            id SERIAL PRIMARY KEY,
-            session_id UUID NOT NULL,
-            message JSONB NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            subject TEXT
-        );
+        id SERIAL PRIMARY KEY,
+        session_id UUID NOT NULL,
+        message JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+""")
+
+# Step 2: Add missing columns (migration logic)
+cur.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'chat_history'
+            AND column_name = 'subject'
+        ) THEN
+            ALTER TABLE chat_history ADD COLUMN subject TEXT;
+        END IF;
+    END $$;
+""")
+
+# Step 3: Create indexes
+cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history (session_id);
     CREATE INDEX IF NOT EXISTS idx_chat_history_subject ON chat_history (subject);
 """)
 ```
 
----
+### Benefits:
+- ✅ No manual SQL commands needed
+- ✅ Works on both new and existing databases
+- ✅ Portable across different environments
+- ✅ Self-healing for future schema changes
 
-## Update respond() Function
-
-Modify the `respond` function to save the first message as the subject:
-
-**Find this section (around line 198):**
+### How to Add Future Columns:
+Follow the same pattern in Step 2 of the migration logic:
 ```python
-def respond(message, chat_history, session_id, persona, strict_mode):
-    """
-    Call chat_function to get the LLM response.
-    """
-    bot_message = chat_function(message, chat_history, session_id, persona, strict_mode)
-
-    # Append in new Gradio format
-    chat_history.append({"role": "user", "content": message})
-    chat_history.append({"role": "assistant", "content": bot_message})
-    return "", chat_history
+# Example: Adding a 'rating' column
+cur.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'chat_history'
+            AND column_name = 'rating'
+        ) THEN
+            ALTER TABLE chat_history ADD COLUMN rating INTEGER;
+        END IF;
+    END $$;
+""")
 ```
 
-**Replace with:**
+---
+
+## **(__FIXED__)** Update respond() Function - Auto-Save Subject
+
+**Status:** ✅ Implemented in main.py (lines 398-424)
+
+### What Was Fixed:
+The `respond()` function now automatically:
+1. Detects if it's the first message in a session
+2. Saves the first user message as the chat subject (truncated to 50 chars)
+3. Refreshes the session list to show the new subject immediately
+
+### Current Implementation:
 ```python
 def respond(message, chat_history, session_id, persona, strict_mode):
     """
@@ -235,13 +267,27 @@ def respond(message, chat_history, session_id, persona, strict_mode):
     chat_history.append({"role": "user", "content": message})
     chat_history.append({"role": "assistant", "content": bot_message})
 
-    # If first message, save it as the subject (truncate to 50 chars)
+    # Save subject for messages (truncate to 50 chars)
     if is_first_message:
         subject = message[:50] + ("..." if len(message) > 50 else "")
         save_message_with_subject(session_id, subject)
 
-    return "", chat_history
+        # Refresh session list
+        sessions = get_all_sessions_with_subjects()
+        session_list_html = create_session_list_html(sessions)
+        return "", chat_history, session_list_html
+    else:
+        # For subsequent messages, apply existing subject to new messages
+        save_message_with_subject(session_id)
+
+    return "", chat_history, gr.update()
 ```
+
+### Benefits:
+- ✅ Automatic subject creation from first message
+- ✅ No manual input required
+- ✅ Session list updates immediately
+- ✅ All messages in session share the same subject
 
 ---
 

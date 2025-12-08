@@ -44,7 +44,7 @@ cp .env.example .env
 ```bash
 # Development mode (foreground)
 uv run main.py
-
+Database Migrations: When adding new columns to existing tables, you need to use ALTER TABLE, not just CREATE TABLE IF NOT EXISTS
 # Production mode (background with logging)
 nohup python main.py > gradio_output.log 2>&1 &
 ```
