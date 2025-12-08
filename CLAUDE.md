@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Rule:
+- Do not modify code in main.py. You need my permission first.
+- I want step by step instructions. I want to learn from the process.
+
 ## Project Overview
 
 LangChain RAG Assistant - A conversational AI chatbot built with LangChain, Gradio, and PostgreSQL that supports:
@@ -156,8 +160,6 @@ DB_USER='langchain'          # Database user
 DB_PASSWORD='langchain'      # Database password
 DB_NAME='langchain_chat'     # Database name
 ```
-
-**Note:** There's a typo in the current .env where `DB_USER='lnagchain'` (missing 'c'). The docker-compose.yml uses `langchain` as the correct username.
 
 ## Key Implementation Details
 

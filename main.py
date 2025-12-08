@@ -100,7 +100,7 @@ def get_all_sessions_with_subjects() -> list[dict]:
             cur.execute("""
                 SELECT
                         session_id,
-                        subject,
+                        COALESCE(MAX(subject), 'Untitled Chat') as subject,
                         MIN(created_at) as created_at
                 FROM chat_history
                 GROUP BY session_id, subject
@@ -152,7 +152,7 @@ def delete_session(session_id: str):
             cur.execute("""
                 DELETE FROM chat_history
                 WHERE session_id = %s;
-            """, (session_id))
+            """, (session_id,))
         print(f"✅ Deleted session {session_id}")
         return True
     except Exception as e:
@@ -164,7 +164,7 @@ def save_message_with_subject(session_id: str, subject: str = None):
     Update the subject for the most recent message in a session.
     Called after the first user message to set the default subject.
     """
-    if db_conn is None or subject is None:
+    if db_conn is None:
         return
     try:
         with db_conn.cursor() as cur:
@@ -173,6 +173,18 @@ def save_message_with_subject(session_id: str, subject: str = None):
                 SET subject = %s
                 WHERE session_id = %s AND subject IS NULL;
             """, (subject, session_id))
+            result = cur.fetchone();
+            if result:
+                subject = result[0]
+            else:
+                return # No subject to apply
+
+        # Apply subject to all messages in this session    
+        cur.execute("""
+            UPDATE chat_history
+            SET subject = %s
+            WHERE session_id = %s AND subject IS NULL;
+        """, (subject, session_id))
         print(f"✅ Set subject for session {session_id}: {subject}")
     except Exception as e:
         print(f"⚠️ Error setting subject: {e}")        
@@ -290,9 +302,9 @@ def handle_delete_session(session_id):
     if success:
         # Create a new session after deletion
         new_id = str(uuid.uuid4())
-        return html, [], new_id, f"✅ Session deleted"
+        return html, [], new_id #, f"✅ Session deleted"
     else:
-        return html, [], str(uuid.uuid4()), "❌ Failed to delete session"
+        return html, [], str(uuid.uuid4()) #, "❌ Failed to delete session"
 
 # function for RAG - process_file
 def process_file(file_obj):
@@ -396,12 +408,20 @@ def respond(message, chat_history, session_id, persona, strict_mode):
     chat_history.append({"role": "user", "content": message})
     chat_history.append({"role": "assistant", "content": bot_message})
 
-    # If first message, save it as subject (truncate to 50 chars)
+    # Save subject for messages (truncate to 50 chars)
     if is_first_message:
         subject = message[:50] + ("..." if len(message) > 50 else "")
         save_message_with_subject(session_id, subject)
+        
+        # Refresh session list
+        sessions = get_all_sessions_with_subjects()
+        session_list_html = create_session_list_html(sessions)
+        return "", chat_history, session_list_html
+    else:
+        # For subsequent messages, apply  existing subject to new messages
+        save_message_with_subject(session_id)
 
-    return "", chat_history
+    return "", chat_history, gr.update()
 
 # 8. Launch the Gradio Chat Interface
 if __name__ == "__main__":
@@ -431,60 +451,19 @@ if __name__ == "__main__":
         sidebar_visible = gr.State(True)
 
         
-        # Persona and Strict Mode
-        with gr.Row():
-                
-            with gr.Column(scale=3, min_width=150):
-            # Persona Selection UI
-                gr.Markdown("### 🎭 AI Persona")
-                persona_dropdown = gr.Dropdown(
-                    choices=[
-                        "You are a helpful assistant.",
-                        "You are an expert of UAS drone.",
-                        "You are an expert of Counter-Rocket, Artillery, Mortar(C-RAM)",
-                        "You are an expert of anti-UAS drone system",
-                        "You are a poetic storyteller.",
-                    ],
-                    value="You are a helpful assistant.",
-                    label="Select Persona"
-                )
-                strict_mode_checkbox = gr.Checkbox(
-                    label="🔒 Strict Mode (Answer from file ONLY)",
-                    value=False
-                )
-                 
-            with gr.Column():  
-    
-            # File Upload UI
-                gr.Markdown("### 📄 RAG Document")
-                file_upload = gr.File(
-                    label="Upload PDF or Text File",
-                    file_count="single",
-                    type="filepath"
-                )
-                status_box = gr.Textbox(
-                    label="Upload Status",
-                    interactive=False,
-                    placeholder="No file uploaded yet...",
-                    lines=2
-                )
+        
 
         with gr.Row(elem_id="main-container"):
             # Left Sidebar - Session Management
-            sidebar = gr.Column(scale=1, min_width=280, elem_id="sidebar", elem_classes="sidebar-shown")
+            sidebar = gr.Column(scale=1, min_width=250, elem_id="sidebar", elem_classes="sidebar-shown") #
 
             with sidebar:
-                gr.Markdown("## 💬 Sessions")
+                gr.Markdown("## 💬 Chat History")
 
                 with gr.Row():
                     new_chat_btn = gr.Button(
-                        "✨ New Chat",
-                        variant="primary",
-                        size="sm",
-                        scale=1
+                        "✨ New Chat"
                     )
-
-                gr.Markdown("#### Chat History")
 
                 # Session list HTML
                 sessions = get_all_sessions_with_subjects()
@@ -506,7 +485,7 @@ if __name__ == "__main__":
                         cancel_rename_btn = gr.Button("Cancel", size="sm")
 
             # Right Side - Chat Interface
-            with gr.Column(elem_id="chat-column"): # scale=3
+            with gr.Column(scale=4, min_width=250, elem_id="chat-column"): # 
                 
                 chatbot = gr.Chatbot(
                     label="Chat History",
@@ -518,15 +497,50 @@ if __name__ == "__main__":
                     msg_textbox = gr.Textbox(
                         placeholder="Type your message here...",
                         show_label=False,
-                        scale=9,
+                        scale=4,
                         container=False
                     )
                     clear_btn = gr.Button(
-                        "🗑️" #,
-                        #scale=1,
-                        #size="sm"
+                        "🗑️",
+                        scale=1
                     )
-                
+                # Persona and Strict Mode
+                with gr.Row():
+                        
+                    with gr.Column(scale=4, min_width=150):
+                    # Persona Selection UI
+                        gr.Markdown("### 🎭 AI Persona")
+                        persona_dropdown = gr.Dropdown(
+                            choices=[
+                                "You are a helpful assistant.",
+                                "You are an expert of UAS drone.",
+                                "You are an expert of Counter-Rocket, Artillery, Mortar(C-RAM)",
+                                "You are an expert of anti-UAS drone system",
+                                "You are a poetic storyteller.",
+                            ],
+                            value="You are a helpful assistant.",
+                            label="Select Persona"
+                        )
+                        strict_mode_checkbox = gr.Checkbox(
+                            label="🔒 Strict Mode (Answer from file ONLY)",
+                            value=False
+                        )
+                        
+                    with gr.Column(scale=1, min_width=150):  
+            
+                    # File Upload UI
+                        gr.Markdown("### 📄 RAG Document")
+                        file_upload = gr.File(
+                            label="Upload PDF or Text File",
+                            file_count="single",
+                            type="filepath"
+                        )
+                        status_box = gr.Textbox(
+                            label="Upload Status",
+                            interactive=False,
+                            placeholder="No file uploaded yet...",
+                            lines=2
+                        )        
 
         # Hidden components for JavaScript callbacks
         # Using textboxes for data + buttons for triggering events
@@ -547,7 +561,7 @@ if __name__ == "__main__":
         msg_textbox.submit(
             fn=respond,
             inputs=[msg_textbox, chatbot, session_id_state, persona_dropdown, strict_mode_checkbox],
-            outputs=[msg_textbox, chatbot]
+            outputs=[msg_textbox, chatbot, session_list]
         )
 
         # Clear chat
@@ -591,11 +605,39 @@ if __name__ == "__main__":
 
         # Load session - triggered by button click
         # The js function reads from the textbox before calling Python
+        # Also includes scrolling logic after load (to top of chat)
         js_load_session_btn.click(
             fn=handle_load_session,
             inputs=[js_load_session_data],
             outputs=[chatbot, session_id_state],
-            js="(data) => { console.log('[Backend Call] Load with:', data); return data; }"
+            js="""(data) => {
+                console.log('[Backend Call] Load with:', data);
+                // Wait longer for Gradio to render, then scroll to top
+                setTimeout(() => {
+                    // Find all elements with overflow-y auto or scroll
+                    const allElements = document.querySelectorAll('*');
+                    let scrolled = false;
+
+                    for (let elem of allElements) {
+                        const style = window.getComputedStyle(elem);
+                        const isScrollable = style.overflowY === 'auto' || style.overflowY === 'scroll';
+                        const hasScroll = elem.scrollHeight > elem.clientHeight;
+
+                        // Check if this element is inside the chatbot
+                        if (isScrollable && hasScroll && elem.closest('#chatbot')) {
+                            elem.scrollTop = 0;
+                            console.log('[Load] Scrolled element:', elem.className, 'scrollHeight:', elem.scrollHeight);
+                            scrolled = true;
+                            break;
+                        }
+                    }
+
+                    if (!scrolled) {
+                        console.log('[Load] No scrollable element found inside chatbot');
+                    }
+                }, 1000);
+                return data;
+            }"""
         )
 
         # Show rename dialog - triggered by button click
@@ -1035,14 +1077,14 @@ if __name__ == "__main__":
         /* Session list - reduced height to show file upload and status */
         .session-list {
             overflow-y: auto;
-            margin-top: 0.5rem;
+            margin-top: 10px;
         }
 
         .session-list-empty {
             color: #6c757d;
             font-style: italic;
             text-align: center;
-            padding: 1rem;
+            margin-top: 10px;
         }
 
         .session-item {
@@ -1052,7 +1094,7 @@ if __name__ == "__main__":
             background: white;
             border: 1px solid #dee2e6;
             border-radius: 8px;
-            margin-bottom: 0.5rem;
+            margin-top: 10px;
             padding: 0.75rem;
             transition: all 0.2s;
             position: relative;
