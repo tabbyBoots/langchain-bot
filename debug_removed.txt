@@ -1,0 +1,49 @@
+DEBUG CODE REMOVED FROM main.py
+=================================
+
+Python Debug Prints Removed:
+----------------------------
+Line 158: print(f"[update_session_subject] Found {count_before} messages...")
+Line 168: print(f"[update_session_subject] ✅ Updated {rows_affected} rows...")
+Line 175: print(f"[update_session_subject] Verification - Distinct subjects...")
+Lines 330-331: print validation messages in handle_rename_session
+Line 334: print validation failed message
+Line 337: print validation passed message
+Line 343: print successfully renamed message
+Line 346: print database update failed message
+Lines 702, 704, 711: print messages in show_rename_dialog
+Lines 746-748: print type/value checks in save_rename
+Lines 753-754: print empty session_id warning
+Line 767: print after strip message
+Lines 770, 773-777: print rename result and return details
+Line 819: print cancel button clicked message
+
+JavaScript Console.log Removed:
+-------------------------------
+Line 655: console.log/console.error in hamburger toggle
+Line 671: console.log backend call load
+Lines 686, 693: console.log scroll debugging
+Lines 723, 730, 737: console.log edit dialog visibility
+Lines 791, 799, 804, 811: console.log save dialog debugging
+Line 892: console.log/console.error in triggerGradioUpdate
+Lines 954, 967, 970: console.log/console.error in loadSessionClick
+Lines 980-981, 987, 1003, 1010, 1015, 1018-1019, 1031: Extensive rename debugging with START/END markers
+Lines 1040, 1053, 1056: console.log/console.error in deleteSessionClick
+Lines 1067, 1071, 1079, 1086, 1093, 1102, 1107, 1119, 1125: Initialization debugging
+
+Essential Logging Kept:
+----------------------
+Line 74: ✅ Chat history table verified/created
+Line 76: ⚠️ DB Connection Error
+Lines 98, 107, 141: Session fetch errors
+Line 104: ✅ Found sessions (kept for troubleshooting)
+Line 138: ✅ Found X sessions with subjects (kept for troubleshooting)
+Line 149, 189: ⚠️ No database connection
+Line 179: ⚠️ Error updating subject (with traceback removed)
+Line 197: ✅ Deleted session
+Line 200: ⚠️ Error deleting session
+Line 219, 237, 239: Subject setting success/error messages
+Line 322: 🔄 Loaded session
+Line 325: ⚠️ Error loading session
+Line 484: --- Launching Gradio UI ---
+Line 634: ✨ Starting new chat
