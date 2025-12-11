@@ -11,3 +11,6 @@ wheels/
 
 # Env variables
 .env
+
+# Vector database storage
+qdrant_data/

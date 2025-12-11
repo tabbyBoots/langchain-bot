@@ -13,13 +13,14 @@ from langchain_postgres import PostgresChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
 # add RAG support
-from rag_utils import load_and_split_document, create_vectorstore
+from rag_utils import load_and_split_document, create_vectorstore, load_existing_vectorstore, get_collection_status, clear_vectorstore, get_uploaded_files, delete_file_from_vectorstore
+
+# 1. Load env variables FIRST (acquire API key from .env file at root folder)
+load_dotenv()
 
 # Global variable (Vector Store)
-vector_store = None
-
-# 1. Load env variables (acquire API key from .env file at root folder)
-load_dotenv()
+# Try to load existing collection on startup (persists across server restarts)
+vector_store = load_existing_vectorstore()
 
 # 2. Initialize the Model
 llm = ChatOpenAI(model="gpt-4o-mini")
@@ -334,25 +335,53 @@ def handle_delete_session(session_id):
     else:
         return html, [], str(uuid.uuid4()) #, "❌ Failed to delete session"
 
+# Helper function to create file list display
+def create_files_display():
+    """
+    Creates a markdown display of all uploaded files with their chunk counts.
+    """
+    files = get_uploaded_files()
+    if not files:
+        return "No files uploaded yet"
+
+    md = f"**📚 Uploaded Documents ({len(files)})**\n\n"
+    for f in files:
+        md += f"• **{f['filename']}** - {f['chunks']} chunks\n"
+    return md
+
+def get_file_choices():
+    """
+    Returns a list of filenames for the dropdown selector.
+    """
+    files = get_uploaded_files()
+    return [f"{f['filename']} ({f['chunks']} chunks)" for f in files]
+
 # function for RAG - process_file
 def process_file(file_obj):
     """
-    Handles file upload: loads content, splits it, and creates the vector store
+    Handles file upload: loads content, splits it, and creates the vector store.
+    Returns updated status, file list, and dropdown choices.
     """
     global vector_store
     if file_obj is None:
-        return "No file uploaded."
+        return "No file uploaded.", create_files_display(), get_file_choices()
 
     try:
         # 1. Load and split
         splits = load_and_split_document(file_obj)
 
-        # 2. Create Vector Store (The "Brain")
+        # 2. Create Vector Store (accumulate mode)
         vector_store = create_vectorstore(splits)
 
-        return f"File processed! I have learned {len(splits)} chunks of information."
+        # 3. Get updated totals
+        files = get_uploaded_files()
+        total_chunks = sum(f["chunks"] for f in files)
+
+        status_msg = f"✅ Added {len(splits)} chunks. Total: {total_chunks} chunks across {len(files)} file(s)"
+
+        return status_msg, create_files_display(), get_file_choices()
     except Exception as e:
-        return f"Error processing file: {str(e)}"
+        return f"Error processing file: {str(e)}", create_files_display(), get_file_choices()
 
 def chat_function(message, history, session_id, system_instruction, strict_mode):
     """
@@ -567,9 +596,37 @@ if __name__ == "__main__":
                         status_box = gr.Textbox(
                             label="Upload Status",
                             interactive=False,
-                            placeholder="No file uploaded yet...",
+                            value=get_collection_status(),  # Show current collection status
                             lines=2
-                        )        
+                        )
+
+                        # File list display
+                        files_display = gr.Markdown(
+                            value=create_files_display(),
+                            elem_id="files-display"
+                        )
+
+                        # Individual file delete
+                        with gr.Row():
+                            file_selector = gr.Dropdown(
+                                label="Select file to delete",
+                                choices=get_file_choices(),
+                                interactive=True,
+                                scale=3
+                            )
+                            delete_file_btn = gr.Button(
+                                "🗑️ Delete",
+                                variant="secondary",
+                                size="sm",
+                                scale=1
+                            )
+
+                        # Clear all button
+                        clear_collection_btn = gr.Button(
+                            "🗑️ Clear All Documents",
+                            variant="secondary",
+                            size="sm"
+                        )
 
         # Hidden components for JavaScript callbacks
         # Using textboxes for data + buttons for triggering events
@@ -753,11 +810,68 @@ if __name__ == "__main__":
             outputs=[session_list, chatbot, session_id_state]
         )
 
-        # File upload
+        # File upload - now returns status, files display, and dropdown choices
         file_upload.change(
             fn=process_file,
             inputs=file_upload,
-            outputs=status_box
+            outputs=[status_box, files_display, file_selector]
+        )
+
+        # Delete individual file
+        def handle_delete_file(selected_file):
+            """Delete a specific file from the collection."""
+            global vector_store
+            if not selected_file:
+                return (
+                    "⚠️ Please select a file to delete",
+                    create_files_display(),
+                    get_file_choices()
+                )
+
+            # Extract filename from "filename.pdf (X chunks)" format
+            filename = selected_file.split(" (")[0]
+
+            # Find the full source path
+            files = get_uploaded_files()
+            source_path = None
+            for f in files:
+                if f["filename"] == filename:
+                    source_path = f["source"]
+                    break
+
+            if not source_path:
+                return (
+                    f"⚠️ Could not find {filename}",
+                    create_files_display(),
+                    get_file_choices()
+                )
+
+            # Delete the file
+            result = delete_file_from_vectorstore(source_path)
+
+            # Reload vector store if collection still exists
+            vector_store = load_existing_vectorstore()
+
+            return result, create_files_display(), get_file_choices()
+
+        delete_file_btn.click(
+            fn=handle_delete_file,
+            inputs=file_selector,
+            outputs=[status_box, files_display, file_selector]
+        )
+
+        # Clear collection button
+        def handle_clear_collection():
+            """Clear all documents from the Qdrant collection."""
+            global vector_store
+            result = clear_vectorstore()
+            vector_store = None  # Reset the global variable
+            return result, create_files_display(), get_file_choices()
+
+        clear_collection_btn.click(
+            fn=handle_clear_collection,
+            inputs=None,
+            outputs=[status_box, files_display, file_selector]
         )
 
     # Custom JavaScript for dropdown menus and session loading
