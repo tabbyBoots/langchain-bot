@@ -506,6 +506,7 @@ if __name__ == "__main__":
 
         session_id_state = gr.State(lambda: str(uuid.uuid4()))
         sidebar_visible = gr.State(True)
+        session_panel_visible = gr.State(True)
 
         
         
@@ -522,25 +523,93 @@ if __name__ == "__main__":
                         "✨ New Chat"
                     )
 
-                # Session list HTML
-                sessions = get_all_sessions_with_subjects()
-                session_list = gr.HTML(
-                    value=create_session_list_html(sessions),
-                    elem_id="session-list-container"
+                # NEW: Wrap session list in a toggleable container
+                session_panel = gr.Column(visible=True, elem_id="session-panel")
+
+                with session_panel:
+                    # Session list HTML
+                    sessions = get_all_sessions_with_subjects()
+                    session_list = gr.HTML(
+                        value=create_session_list_html(sessions),
+                        elem_id="session-list-container"
+                    )
+
+                    # Rename dialog
+                    rename_session_id_state = gr.State("")  # Use State instead of hidden textbox
+                    with gr.Group(visible=False, elem_id="rename-dialog") as rename_dialog:
+                        gr.Markdown("### ✏️ Rename Session")
+                        rename_input = gr.Textbox(
+                            label="New Name",
+                            placeholder="Enter new session name",
+                            elem_id="rename-input-box"
+                        )
+                        with gr.Row(elem_id="rename-buttons-row"):
+                            save_rename_btn = gr.Button("Save", variant="primary", size="sm", elem_id="save-rename-btn")
+                            cancel_rename_btn = gr.Button("Cancel", size="sm", elem_id="cancel-rename-btn")
+
+                # END of session_panel - Persona and File Upload go here (always visible)
+
+                # Persona Selection UI (outside session panel, always visible)
+                gr.Markdown("---")
+                gr.Markdown("### 🎭 AI Persona")
+                persona_dropdown = gr.Dropdown(
+                    choices=[
+                        "You are a helpful assistant.",
+                        "You are an expert of UAS drone.",
+                        "You are an expert of Counter-Rocket, Artillery, Mortar(C-RAM)",
+                        "You are an expert of anti-UAS drone system",
+                        "You are a poetic storyteller.",
+                    ],
+                    value="You are a helpful assistant.",
+                    label="Select Persona"
+                )
+                strict_mode_checkbox = gr.Checkbox(
+                    label="🔒 Strict Mode (Answer from file ONLY)",
+                    value=False
                 )
 
-                # Rename dialog
-                rename_session_id_state = gr.State("")  # Use State instead of hidden textbox
-                with gr.Group(visible=False, elem_id="rename-dialog") as rename_dialog:
-                    gr.Markdown("### ✏️ Rename Session")
-                    rename_input = gr.Textbox(
-                        label="New Name",
-                        placeholder="Enter new session name",
-                        elem_id="rename-input-box"
+                # File Upload UI (outside session panel, always visible)
+                gr.Markdown("---")
+                gr.Markdown("### 📄 RAG Document")
+                file_upload = gr.File(
+                    label="Upload PDF or Text File",
+                    file_count="single",
+                    type="filepath"
+                )
+                status_box = gr.Textbox(
+                    label="Upload Status",
+                    interactive=False,
+                    value=get_collection_status(),
+                    lines=2
+                )
+
+                # File list display
+                files_display = gr.Markdown(
+                    value=create_files_display(),
+                    elem_id="files-display"
+                )
+
+                # Individual file delete
+                with gr.Row():
+                    file_selector = gr.Dropdown(
+                        label="Select file to delete",
+                        choices=get_file_choices(),
+                        interactive=True,
+                        scale=3
                     )
-                    with gr.Row(elem_id="rename-buttons-row"):
-                        save_rename_btn = gr.Button("Save", variant="primary", size="sm", elem_id="save-rename-btn")
-                        cancel_rename_btn = gr.Button("Cancel", size="sm", elem_id="cancel-rename-btn")
+                    delete_file_btn = gr.Button(
+                        "🗑️ Delete",
+                        variant="secondary",
+                        size="sm",
+                        scale=1
+                    )
+
+                # Clear all button
+                clear_collection_btn = gr.Button(
+                    "🗑️ Clear All Documents",
+                    variant="secondary",
+                    size="sm"
+                )
 
             # Right Side - Chat Interface
             with gr.Column(scale=4, min_width=250, elem_id="chat-column"): # 
@@ -562,71 +631,6 @@ if __name__ == "__main__":
                         "🗑️",
                         scale=1
                     )
-                # Persona and Strict Mode
-                with gr.Row():
-                        
-                    with gr.Column(scale=4, min_width=150):
-                    # Persona Selection UI
-                        gr.Markdown("### 🎭 AI Persona")
-                        persona_dropdown = gr.Dropdown(
-                            choices=[
-                                "You are a helpful assistant.",
-                                "You are an expert of UAS drone.",
-                                "You are an expert of Counter-Rocket, Artillery, Mortar(C-RAM)",
-                                "You are an expert of anti-UAS drone system",
-                                "You are a poetic storyteller.",
-                            ],
-                            value="You are a helpful assistant.",
-                            label="Select Persona"
-                        )
-                        strict_mode_checkbox = gr.Checkbox(
-                            label="🔒 Strict Mode (Answer from file ONLY)",
-                            value=False
-                        )
-                        
-                    with gr.Column(scale=1, min_width=150):  
-            
-                    # File Upload UI
-                        gr.Markdown("### 📄 RAG Document")
-                        file_upload = gr.File(
-                            label="Upload PDF or Text File",
-                            file_count="single",
-                            type="filepath"
-                        )
-                        status_box = gr.Textbox(
-                            label="Upload Status",
-                            interactive=False,
-                            value=get_collection_status(),  # Show current collection status
-                            lines=2
-                        )
-
-                        # File list display
-                        files_display = gr.Markdown(
-                            value=create_files_display(),
-                            elem_id="files-display"
-                        )
-
-                        # Individual file delete
-                        with gr.Row():
-                            file_selector = gr.Dropdown(
-                                label="Select file to delete",
-                                choices=get_file_choices(),
-                                interactive=True,
-                                scale=3
-                            )
-                            delete_file_btn = gr.Button(
-                                "🗑️ Delete",
-                                variant="secondary",
-                                size="sm",
-                                scale=1
-                            )
-
-                        # Clear all button
-                        clear_collection_btn = gr.Button(
-                            "🗑️ Clear All Documents",
-                            variant="secondary",
-                            size="sm"
-                        )
 
         # Hidden components for JavaScript callbacks
         # Using textboxes for data + buttons for triggering events
@@ -671,19 +675,16 @@ if __name__ == "__main__":
             outputs=[session_id_state, chatbot, session_list]
         )
 
-        # Hamburger button - toggle sidebar using JavaScript
+        # Hamburger button - toggle session panel only (not entire sidebar)
+        def toggle_session_panel(is_visible):
+            """Toggle only the session history panel."""
+            new_visible = not is_visible
+            return new_visible, gr.update(visible=new_visible)
+
         hamburger_btn.click(
-            fn=None,
-            inputs=None,
-            outputs=None,
-            js="""
-            () => {
-                const sidebar = document.getElementById('sidebar');
-                if (sidebar) {
-                    sidebar.classList.toggle('sidebar-hidden');
-                }
-            }
-            """
+            fn=toggle_session_panel,
+            inputs=[session_panel_visible],
+            outputs=[session_panel_visible, session_panel]
         )
 
         # Load session - triggered by button click
@@ -1066,9 +1067,9 @@ if __name__ == "__main__":
             overflow: hidden !important;
         }
 
-        /* Sidebar toggle */
-        #sidebar.sidebar-hidden {
-            display: none !important;
+        /* Session panel toggle - smooth transitions */
+        #session-panel {
+            transition: all 0.3s ease;
         }
 
         /* Global container with grayish background */
